@@ -2,52 +2,35 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import Footer from './components/Footer';
 import { ThemeProvider, useTheme } from './components/ThemeProvider';
-import type { SlideDefinition, VoiceAction } from './types';
+import { slides, clampSlideIndex } from './deck';
+import type { VoiceAction } from './types';
 import { isSpeakerNotesRoute, SpeakerNotesView, SPEAKER_NOTES_QUERY_PARAM, SPEAKER_NOTES_CHANNEL, postSpeakerNotesState, isSpeakerNotesMessage } from './SpeakerNotes';
 import HelpOverlay from './components/HelpOverlay';
-import { getHelpShortcutSections, getSlideTransitionClass, isPresentationShortcutAllowed } from './presentationBehavior';
+import {
+  getHelpShortcutSections,
+  getNextPresentationPosition,
+  getPresentationNavigationDirection,
+  getPreviousPresentationPosition,
+  getSlideStepCount,
+  getSlideTransitionClass,
+  isPresentationShortcutAllowed,
+} from './presentationBehavior';
 import { useSpeechRecognition, type FinalSpeechRecognitionResult } from './hooks/useSpeechRecognition';
 import { useSpeechFollow } from './hooks/useSpeechFollow';
-import TitleSlide from './slides/TitleSlide';
-import PlaceholderSlide from './slides/PlaceholderSlide';
 import { isThemeName } from './theme';
 
-
-export const slides: SlideDefinition[] = [
-  {
-    content: <TitleSlide />,
-    notes: [
-      'Hello, everyone.',
-      '[Welcome the audience and introduce the deck.]',
-      '[Set expectations for what this presentation will cover.]',
-    ],
-    title: 'Calliope Canvas',
-  },
-  {
-    content: <PlaceholderSlide />,
-    notes: [
-      'Replace this placeholder with the next slide in your presentation.',
-      'Speaker notes can contain reminders, transitions, or extra context.',
-    ],
-    speech: {
-      cues: ['add your slide here', 'placeholder slide', 'next section'],
-    },
-    title: 'Add your slide here',
-  },
-];
+const SLIDE_STEP_COUNTS = slides.map(slide => getSlideStepCount(slide.stepCount));
 
 const MIN_ZOOM_LEVEL = 0.8;
 const MAX_ZOOM_LEVEL = 1.4;
 const ZOOM_STEP = 0.1;
-
-export const clampSlideIndex = (slideIndex: number) =>
-  Math.min(slides.length - 1, Math.max(0, slideIndex));
 
 const clampZoomLevel = (zoomLevel: number) =>
   Number(Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, zoomLevel)).toFixed(2));
 
 const DeckView: React.FC = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
+  const [currentStep, setCurrentStep] = useState(0);
   const [slideDirection, setSlideDirection] = useState<1 | -1>(1);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [animationsPaused, setAnimationsPaused] = useState(false);
@@ -56,19 +39,45 @@ const DeckView: React.FC = () => {
   const { setTheme, theme } = useTheme();
 
   const currentSlideRef = useRef(currentSlide);
+  const currentStepRef = useRef(currentStep);
   const themeRef = useRef(theme);
   const speakerNotesChannelRef = useRef<BroadcastChannel | null>(null);
   const speechFollowResultHandlerRef = useRef<(result: FinalSpeechRecognitionResult) => void>(() => undefined);
   const helpSections = getHelpShortcutSections();
 
+  const setPresentationPosition = (slideIndex: number, stepIndex: number) => {
+    currentSlideRef.current = slideIndex;
+    currentStepRef.current = stepIndex;
+    setCurrentSlide(slideIndex);
+    setCurrentStep(stepIndex);
+  };
+
   const goToNext = () => {
-    setSlideDirection(1);
-    setCurrentSlide(prev => Math.min(slides.length - 1, prev + 1));
+    const nextPosition = getNextPresentationPosition(
+      currentSlideRef.current,
+      currentStepRef.current,
+      SLIDE_STEP_COUNTS
+    );
+
+    if (nextPosition.slideIndex !== currentSlideRef.current) {
+      setSlideDirection(1);
+    }
+
+    setPresentationPosition(nextPosition.slideIndex, nextPosition.stepIndex);
   };
 
   const goToPrev = () => {
-    setSlideDirection(-1);
-    setCurrentSlide(prev => Math.max(0, prev - 1));
+    const previousPosition = getPreviousPresentationPosition(
+      currentSlideRef.current,
+      currentStepRef.current,
+      SLIDE_STEP_COUNTS
+    );
+
+    if (previousPosition.slideIndex !== currentSlideRef.current) {
+      setSlideDirection(-1);
+    }
+
+    setPresentationPosition(previousPosition.slideIndex, previousPosition.stepIndex);
   };
 
   const goToSlide = (nextSlide: number) => {
@@ -77,9 +86,11 @@ const DeckView: React.FC = () => {
 
     if (clampedSlide !== currentSlideValue) {
       setSlideDirection(clampedSlide > currentSlideValue ? 1 : -1);
+      const nextStep = clampedSlide < currentSlideValue
+        ? SLIDE_STEP_COUNTS[clampedSlide] - 1
+        : 0;
+      setPresentationPosition(clampedSlide, nextStep);
     }
-
-    setCurrentSlide(clampedSlide);
   };
 
   const closeHelp = () => {
@@ -129,7 +140,12 @@ const DeckView: React.FC = () => {
     speakerNotesWindow?.focus();
 
     window.setTimeout(() => {
-      postSpeakerNotesState(speakerNotesChannelRef.current, currentSlideRef.current, theme);
+      postSpeakerNotesState(
+        speakerNotesChannelRef.current,
+        currentSlideRef.current,
+        currentStepRef.current,
+        theme
+      );
     }, 100);
   };
 
@@ -147,12 +163,21 @@ const DeckView: React.FC = () => {
       }
 
       if (event.data.type === 'speaker-notes-request-state') {
-        postSpeakerNotesState(channel, currentSlideRef.current, themeRef.current);
+        postSpeakerNotesState(
+          channel,
+          currentSlideRef.current,
+          currentStepRef.current,
+          themeRef.current
+        );
         return;
       }
 
-      if (event.data.type === 'speaker-notes-set-slide') {
-        goToSlide(event.data.currentSlide);
+      if (event.data.type === 'speaker-notes-navigate') {
+        if (event.data.direction === 'next') {
+          goToNext();
+        } else {
+          goToPrev();
+        }
         return;
       }
 
@@ -161,7 +186,12 @@ const DeckView: React.FC = () => {
       }
     };
 
-    postSpeakerNotesState(channel, currentSlideRef.current, themeRef.current);
+    postSpeakerNotesState(
+      channel,
+      currentSlideRef.current,
+      currentStepRef.current,
+      themeRef.current
+    );
 
     return () => {
       channel.close();
@@ -174,9 +204,10 @@ const DeckView: React.FC = () => {
 
   useEffect(() => {
     currentSlideRef.current = currentSlide;
+    currentStepRef.current = currentStep;
     themeRef.current = theme;
-    postSpeakerNotesState(speakerNotesChannelRef.current, currentSlide, theme);
-  }, [currentSlide, theme]);
+    postSpeakerNotesState(speakerNotesChannelRef.current, currentSlide, currentStep, theme);
+  }, [currentSlide, currentStep, theme]);
 
   const commandHandlers: Record<VoiceAction, () => void> = {
     next: goToNext,
@@ -189,20 +220,14 @@ const DeckView: React.FC = () => {
 
   const {
     isVoiceEnabled,
-    isVoiceListening,
-    isVoiceSupported,
     requestMicrophonePermission,
     setVoiceControlsEnabled,
-    voiceError,
   } = useSpeechRecognition({
     onFinalResult: result => speechFollowResultHandlerRef.current(result),
   });
   const {
     canUndoAutoAdvance,
     isSpeechFollowEnabled,
-    lastAutoAdvance,
-    lastCommand,
-    lastHeard,
     onFinalRecognitionResult,
     setIsSpeechFollowEnabled,
     undoAutoAdvance,
@@ -240,10 +265,12 @@ const DeckView: React.FC = () => {
         return;
       }
 
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      const navigationDirection = getPresentationNavigationDirection(e.key);
+
+      if (navigationDirection === 'next') {
         e.preventDefault();
         goToNext();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      } else if (navigationDirection === 'previous') {
         e.preventDefault();
         goToPrev();
       } else if (e.key === 'f' || e.key === 'F') {
@@ -282,40 +309,43 @@ const DeckView: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [animationsPaused, isHelpOpen, isVoiceEnabled, requestMicrophonePermission, setVoiceControlsEnabled, undoAutoAdvance]);
 
+  const currentSlideDefinition = slides[currentSlide];
+  const currentSlideContent = typeof currentSlideDefinition.content === 'function'
+    ? currentSlideDefinition.content(currentStep)
+    : currentSlideDefinition.content;
+  const currentSlideStepCount = SLIDE_STEP_COUNTS[currentSlide];
+  const canGoNext = currentSlide < slides.length - 1 || currentStep < currentSlideStepCount - 1;
+  const canGoPrev = currentSlide > 0 || currentStep > 0;
+
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center p-4 bg-canvas font-sans text-text relative">
       <div className="progress-bar w-full" style={{ width: `${((currentSlide + 1) / slides.length) * 100}%` }}></div>
-      <main className="relative z-0 w-full max-w-7xl flex-grow flex flex-col items-center justify-center">
+      <main className="relative z-0 flex w-full max-w-[120rem] flex-grow flex-col items-center justify-center">
         <div
           className={`presentation-stage w-full ${animationsPaused ? 'animations-paused' : ''}`}
           style={{ transform: `scale(${zoomLevel})` }}
         >
           <div className="slide-container w-full">
             <div key={currentSlide} className={getSlideTransitionClass(slideDirection)}>
-              {slides[currentSlide].content}
+              {currentSlideContent}
             </div>
           </div>
         </div>
       </main>
       <Footer
+        canGoNext={canGoNext}
+        canGoPrev={canGoPrev}
         currentSlide={currentSlide}
         goToNext={goToNext}
         goToPrev={goToPrev}
         isControlsHidden={isFooterHidden}
-        isVoiceEnabled={isVoiceEnabled}
-        isVoiceListening={isVoiceListening}
-        isVoiceSupported={isVoiceSupported}
         isSpeechFollowEnabled={isSpeechFollowEnabled}
         canUndoAutoAdvance={canUndoAutoAdvance}
-        lastAutoAdvance={lastAutoAdvance}
-        lastCommand={lastCommand}
-        lastHeard={lastHeard}
         openSpeakerNotesView={openSpeakerNotesView}
         slideCount={slides.length}
         toggleFullscreen={toggleFullscreen}
         toggleSpeechFollow={() => setIsSpeechFollowEnabled(enabled => !enabled)}
         undoAutoAdvance={undoAutoAdvance}
-        voiceError={voiceError}
       />
       <HelpOverlay isOpen={isHelpOpen} onClose={closeHelp} sections={helpSections} />
     </div>

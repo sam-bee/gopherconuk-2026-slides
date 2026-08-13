@@ -1,3 +1,9 @@
+These are the slides for my talk _From Go to the GPU: Integrating with CUDA_. I used the [Calliope
+Canvas](https://github.com/LostWarrior/Calliope-Canvas) slideshow tool, created by my friend Kirti. Its original
+`README.md` text is below.
+
+* * *
+
 # Calliope-Canvas
 
 ***Your slides are code. Your code is art.***
@@ -39,7 +45,7 @@ npm run build
 
 ### Voice Controls
 
-Voice now asks for microphone permission when the deck loads and arms speech recognition immediately after permission is granted. Use commands like:
+Voice controls are off by default and do not request microphone access when the deck loads. Press `V` to grant permission and enable them; press `V` again to disable them. Available commands include:
 
 - `Next Slide`
 - `Next Slide Please`
